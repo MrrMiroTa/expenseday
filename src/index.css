@@ -1,14 +1,16 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Khmer+OS+Siemreab&family=Siemreab&display=swap');
 
 @theme {
-  --font-siemreab: "Siemreab", "Khmer OS Siemreab", sans-serif;
+  /* បង្កើត Font Family ថ្មីសម្រាប់ប្រើក្នុង Tailwind */
+  --font-khmer: "Siemreab", "Khmer OS Siemreab", sans-serif;
 }
 
 :root {
-  font-family: var(--font-siemreab);
+  /* កំណត់ឱ្យប្រើ Font ខ្មែរលើទំព័រទាំងមូល */
+  font-family: var(--font-khmer);
 }
 
-body {
-  @apply bg-gray-50 text-gray-900;
+/* បង្ខំឱ្យ Button និង Input ប្រើ Font នេះដែរ */
+button, input, select, textarea {
+  font-family: var(--font-khmer);
 }

@@ -70,7 +70,7 @@ const ExpenseTracker = () => {
   );
 
   return (
-    <div className="min-h-screen p-4 md:p-8 font-siemreab bg-gray-50">
+    <div className="min-h-screen p-4 md:p-8 font-khmer bg-gray-50">
       <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-100">
         <div className="bg-blue-600 p-6 text-white text-center">
           <h2 className="text-3xl font-bold italic">📊 កត់ត្រាការចំណាយ</h2>
