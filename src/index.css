@@ -1,0 +1,14 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Khmer+OS+Siemreab&family=Siemreab&display=swap');
+
+@theme {
+  --font-siemreab: "Siemreab", "Khmer OS Siemreab", sans-serif;
+}
+
+:root {
+  font-family: var(--font-siemreab);
+}
+
+body {
+  @apply bg-gray-50 text-gray-900;
+}
