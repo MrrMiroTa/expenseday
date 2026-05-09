@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Khmer:wght@400;700&display=swap');
+
+body {
+  font-family: 'Noto Sans Khmer', sans-serif;
+}
 @theme {
   /* បង្កើត Font Family ថ្មីសម្រាប់ប្រើក្នុង Tailwind */
   --font-khmer: "Siemreab", "Khmer OS Siemreab", sans-serif;

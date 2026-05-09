@@ -1,390 +1,229 @@
 import { useState, useEffect } from 'react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import Footer from './components/footer';
 
 const ExpenseTracker = () => {
-  // --- State គ្របដណ្ដប់ទិន្នន័យ ---
+  // 1. Load data from LocalStorage
   const [expenses, setExpenses] = useState(() => {
     const savedData = localStorage.getItem('my_expenses');
-    if (!savedData) return [];
-    try {
-      const parsedData = JSON.parse(savedData);
-      const twoMonthsAgo = new Date();
-      twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-      return parsedData.filter(item => new Date(item.id) > twoMonthsAgo);
-    } catch { return []; }
+    return savedData ? JSON.parse(savedData) : [];
   });
 
-  const [formData, setFormData] = useState({ item: '', price: '', currency: 'USD' });
-  const [searchTerm, setSearchTerm] = useState('');
-  const [searchDate, setSearchDate] = useState('');
-  const [editingId, setEditingId] = useState(null);
-  const [exchangeRate, setExchangeRate] = useState(4000); // 1 USD = 4000 KHR
+  // 2. State for form inputs
+  const [formData, setFormData] = useState({ 
+    item: '', 
+    price: '', 
+    currency: 'USD', 
+    date: new Date().toISOString().split('T')[0] 
+  });
 
-  // --- State សម្រាប់ Custom Notification ---
-  const [showModal, setShowModal] = useState({ show: false, id: null });
+  const [exportPeriod, setExportPeriod] = useState('month');
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
 
+  // អត្រាប្តូរប្រាក់សម្រាប់គណនា Balance រួម
+  const exchangeRate = 4100; 
+
+  // 3. Auto-save to LocalStorage
   useEffect(() => {
     localStorage.setItem('my_expenses', JSON.stringify(expenses));
   }, [expenses]);
 
-  // បង្ហាញការជូនដំណឹង (Toast)
   const showToast = (msg, type = 'success') => {
     setToast({ show: true, message: msg, type });
     setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
   };
 
+  // --- Logic គណនាទឹកប្រាក់ ---
+  const getSum = (type, curr) => expenses
+    .filter(ex => ex.type === type && ex.currency === curr)
+    .reduce((s, ex) => s + Number(ex.price), 0);
+
+  const netUSD = getSum('income', 'USD') - getSum('expense', 'USD');
+  const netKHR = getSum('income', 'KHR') - getSum('expense', 'KHR');
+
+  // សាច់ប្រាក់សរុបដែលនៅសល់ (Total Balance) បំប្លែងទៅជា USD
+  const grandTotalUSD = netUSD + (netKHR / exchangeRate);
+
+  // --- Logic បញ្ចូលទិន្នន័យ ---
   const handleSubmit = (e, type) => {
     e.preventDefault();
-    if (!formData.item || !formData.price) return;
-
-    const now = new Date();
-    const d = String(now.getDate()).padStart(2, '0');
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const y = now.getFullYear();
-    const formattedDate = `${d}/${m}/${y}`;
-    const formattedTime = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-
-    if (editingId) {
-      setExpenses(expenses.map(ex =>
-        ex.id === editingId
-          ? { ...ex, ...formData, price: parseFloat(formData.price), isEdited: true, updatedAt: `${formattedDate} ${formattedTime}` }
-          : ex
-      ));
-      setEditingId(null);
-      showToast("កែប្រែទិន្នន័យបានជោគជ័យ!", "success");
-    } else {
-      const newEntry = {
-        id: Date.now(),
-        item: formData.item,
-        price: parseFloat(formData.price),
-        currency: formData.currency,
-        type,
-        createdAt: formattedDate,
-        createdAtFull: `${formattedDate} ${formattedTime}`,
-        isEdited: false
-      };
-      setExpenses([newEntry, ...expenses]);
-      showToast("បានបញ្ចូលទិន្នន័យថ្មី!", "success");
+    if (!formData.item || !formData.price || !formData.date) {
+      showToast("សូមបំពេញព័ត៌មានឱ្យគ្រប់!", "error");
+      return;
     }
-    setFormData({ item: '', price: '', currency: 'USD' });
+
+    const newEntry = {
+      id: Date.now(),
+      item: formData.item,
+      price: parseFloat(formData.price),
+      currency: formData.currency,
+      type: type,
+      createdAt: formData.date
+    };
+
+    // បញ្ចូល និងតម្រៀបតាមថ្ងៃខែ
+    const updated = [newEntry, ...expenses].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    
+    setExpenses(updated);
+    setFormData({ ...formData, item: '', price: '' }); // Reset fields
+    showToast("រក្សាទុកជោគជ័យ!");
   };
 
-  const confirmDelete = (id) => {
-    setShowModal({ show: true, id });
+  // --- PDF Export Logic ---
+  const translateToEng = (t) => {
+    const dict = { 'ចំណាយ': 'Expense', 'ចំណូល': 'Income' };
+    return dict[t] || t;
   };
 
-  const handleDelete = () => {
-    setExpenses(expenses.filter(ex => ex.id !== showModal.id));
-    setShowModal({ show: false, id: null });
-    showToast("ទិន្នន័យត្រូវបានលុប!", "error");
+  const handleExport = () => {
+    try {
+      const doc = new jsPDF();
+      const now = new Date();
+      let startDate = new Date();
+      if (exportPeriod === 'day') startDate.setHours(0,0,0,0);
+      else if (exportPeriod === 'week') startDate.setDate(now.getDate() - 7);
+      else if (exportPeriod === 'month') startDate.setMonth(now.getMonth() - 1);
+
+      const filtered = expenses.filter(ex => new Date(ex.createdAt) >= startDate);
+
+      doc.setFontSize(18);
+      doc.text('Financial Statement', 105, 20, { align: 'center' });
+      
+      autoTable(doc, {
+        startY: 30,
+        head: [['Date', 'Description', 'Amount', 'Type']],
+        body: filtered.map(ex => [
+          ex.createdAt, 
+          ex.item, 
+          ex.currency === 'USD' ? `$${ex.price.toFixed(2)}` : `${ex.price.toLocaleString()} KHR`, 
+          translateToEng(ex.type === 'income' ? 'ចំណូល' : 'ចំណាយ')
+        ]),
+        headStyles: { fillColor: [30, 41, 59] }
+      });
+      doc.save(`Report_${now.toISOString().split('T')[0]}.pdf`);
+      showToast("ទាញយក PDF រួចរាល់");
+    } catch (e) { showToast("Export Failed", "error"); }
   };
-
-  const handleEdit = (item) => {
-    setEditingId(item.id);
-    setFormData({ item: item.item, price: item.price, currency: item.currency });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const filteredExpenses = expenses.filter(ex => 
-    ex.item.toLowerCase().includes(searchTerm.toLowerCase()) && 
-    ex.createdAt.includes(searchDate)
-  );
-
-  const totalIncomeUSD = filteredExpenses
-    .filter(ex => ex.currency === 'USD' && ex.type === 'income')
-    .reduce((sum, ex) => sum + Number(ex.price || 0), 0);
-
-  const totalExpenseUSD = filteredExpenses
-    .filter(ex => ex.currency === 'USD' && ex.type === 'expense')
-    .reduce((sum, ex) => sum + Number(ex.price || 0), 0);
-
-  const netUSD = totalIncomeUSD - totalExpenseUSD;
-
-  const totalIncomeKHR = filteredExpenses
-    .filter(ex => ex.currency === 'KHR' && ex.type === 'income')
-    .reduce((sum, ex) => sum + Number(ex.price || 0), 0);
-
-  const totalExpenseKHR = filteredExpenses
-    .filter(ex => ex.currency === 'KHR' && ex.type === 'expense')
-    .reduce((sum, ex) => sum + Number(ex.price || 0), 0);
-
-  const netKHR = totalIncomeKHR - totalExpenseKHR;
-
-  // Currency conversion for total net
-  const totalIncomeEquivalentUSD = totalIncomeUSD + (totalIncomeKHR / exchangeRate);
-  const totalExpenseEquivalentUSD = totalExpenseUSD + (totalExpenseKHR / exchangeRate);
-  const netEquivalentUSD = totalIncomeEquivalentUSD - totalExpenseEquivalentUSD;
 
   return (
-    <div className="min-h-screen p-4 md:p-8 font-khmer bg-gray-50 text-gray-800 relative">
-      
-      {/* --- Custom Toast Notification --- */}
+    <div className="min-h-screen p-4 md:p-8 bg-slate-50 font-sans text-slate-800">
+      {/* Toast Notification */}
       {toast.show && (
-        <div className={`fixed top-5 right-5 z-50 px-6 py-3 rounded-xl shadow-2xl text-white font-bold animate-bounce transition-all ${toast.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
-          {toast.type === 'success' ? '✅ ' : '🗑️ '} {toast.message}
+        <div className={`fixed top-5 right-5 z-50 px-6 py-3 rounded-xl shadow-2xl text-white transition-all ${toast.type === 'success' ? 'bg-emerald-500' : 'bg-rose-500'}`}>
+          {toast.message}
         </div>
       )}
 
-      {/* --- Custom Delete Modal --- */}
-      {showModal.show && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white p-6 rounded-2xl shadow-2xl max-w-sm w-full text-center animate-in zoom-in duration-200">
-            <div className="text-red-500 text-5xl mb-4 text-center italic">!</div>
-            <h3 className="text-xl font-bold mb-2 text-gray-800">ប្រាកដទេ?</h3>
-            <p className="text-gray-500 mb-6 text-sm">ទិន្នន័យដែលលុបហើយ មិនអាចយកមកវិញបានទេ។</p>
-            <div className="flex gap-3">
-              <button onClick={() => setShowModal({ show: false, id: null })} className="flex-1 py-3 bg-gray-100 text-gray-600 font-bold rounded-xl hover:bg-gray-200">បោះបង់</button>
-              <button onClick={handleDelete} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-xl hover:bg-red-600 shadow-lg shadow-red-200">លុបចោល</button>
+      <div className="max-w-4xl mx-auto">
+        {/* Dashboard Header */}
+        <div className="bg-slate-900 rounded-3xl p-6 md:p-8 text-white mb-6 shadow-xl shadow-slate-200">
+          <div className="flex flex-col md:flex-row justify-between items-center mb-8">
+            <h1 className="text-2xl font-black tracking-tight mb-4 md:mb-0">EXPENSE TRACKER v2.0</h1>
+            <div className="bg-white/10 px-4 py-2 rounded-full border border-white/10 text-sm">
+              អត្រាប្តូរប្រាក់៖ $1 = {exchangeRate.toLocaleString()} ៛
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-emerald-500/10 p-5 rounded-2xl border border-emerald-500/20">
+              <p className="text-emerald-400 text-xs font-bold uppercase tracking-widest mb-1">ចំណូលសរុប (Income)</p>
+              <h2 className="text-2xl font-black">${getSum('income', 'USD').toFixed(2)}</h2>
+              <p className="text-sm opacity-70">{getSum('income', 'KHR').toLocaleString()} ៛</p>
             </div>
-            <div className="bg-purple-50 border border-purple-100 p-6 rounded-3xl">
-              <p className="text-purple-700 font-bold text-lg mb-4">🌐 Total Net (USD Equivalent)</p>
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm items-center">
-                  <span className="text-gray-600">Exchange Rate:</span>
-                  <div className="flex items-center">
-                    <span className="font-bold mr-1">1 USD =</span>
-                    <input type="number" className="w-20 border border-purple-200 p-1 rounded text-center font-bold" value={exchangeRate} onChange={(e) => setExchangeRate(Number(e.target.value))} />
-                    <span className="font-bold ml-1">KHR</span>
+            <div className="bg-rose-500/10 p-5 rounded-2xl border border-rose-500/20">
+              <p className="text-rose-400 text-xs font-bold uppercase tracking-widest mb-1">ចំណាយសរុប (Expense)</p>
+              <h2 className="text-2xl font-black">${getSum('expense', 'USD').toFixed(2)}</h2>
+              <p className="text-sm opacity-70">{getSum('expense', 'KHR').toLocaleString()} ៛</p>
+            </div>
+            <div className="bg-blue-600 p-5 rounded-2xl shadow-lg shadow-blue-500/30">
+              <p className="text-blue-100 text-xs font-bold uppercase tracking-widest mb-1">សមតុល្យសរុប (Net Balance)</p>
+              <h2 className="text-2xl font-black">${grandTotalUSD.toFixed(2)}</h2>
+              <p className="text-sm font-bold text-blue-200">≈ {(grandTotalUSD * exchangeRate).toLocaleString()} ៛</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Input Form Section */}
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+            <div>
+              <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">ថ្ងៃខែ</label>
+              <input type="date" className="w-full bg-slate-50 border-0 p-3 rounded-xl focus:ring-2 focus:ring-blue-500" 
+                value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} />
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">ឈ្មោះមុខទំនិញ / ចំណូល</label>
+              <input className="w-full bg-slate-50 border-0 p-3 rounded-xl focus:ring-2 focus:ring-blue-500" 
+                placeholder="ឧ. ថ្លៃជួលផ្ទះ, ប្រាក់ខែ..." value={formData.item} onChange={e => setFormData({...formData, item: e.target.value})} />
+            </div>
+            <div>
+              <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">ចំនួនទឹកប្រាក់</label>
+              <div className="flex gap-2">
+                <input type="number" className="flex-1 bg-slate-50 border-0 p-3 rounded-xl focus:ring-2 focus:ring-blue-500" 
+                  placeholder="0.00" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} />
+                <select className="bg-slate-100 border-0 rounded-xl font-bold p-3" value={formData.currency} onChange={e => setFormData({...formData, currency: e.target.value})}>
+                  <option value="USD">$</option>
+                  <option value="KHR">៛</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col md:flex-row gap-3">
+            <button onClick={(e) => handleSubmit(e, 'income')} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white p-4 rounded-2xl font-black transition-all active:scale-95 shadow-lg shadow-emerald-200">
+              + បញ្ចូលជាចំណូល
+            </button>
+            <button onClick={(e) => handleSubmit(e, 'expense')} className="flex-1 bg-rose-500 hover:bg-rose-600 text-white p-4 rounded-2xl font-black transition-all active:scale-95 shadow-lg shadow-rose-200">
+              - បញ្ចូលជាចំណាយ
+            </button>
+          </div>
+        </div>
+
+        {/* Transaction History */}
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 min-h-[400px]">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="font-black text-slate-800 tracking-tight">ប្រវត្តិប្រតិបត្តិការ</h3>
+            <div className="flex gap-2">
+              <select className="text-xs bg-slate-100 border-0 rounded-lg p-2 font-bold" value={exportPeriod} onChange={e => setExportPeriod(e.target.value)}>
+                <option value="day">ថ្ងៃនេះ</option>
+                <option value="week">សប្តាហ៍នេះ</option>
+                <option value="month">ខែនេះ</option>
+              </select>
+              <button onClick={handleExport} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-slate-700">
+                EXPORT PDF
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {expenses.length === 0 ? (
+              <div className="text-center py-20 text-slate-300 font-medium italic">មិនទាន់មានទិន្នន័យនៅឡើយ...</div>
+            ) : (
+              expenses.map(ex => (
+                <div key={ex.id} className="group flex justify-between items-center p-4 bg-slate-50 rounded-2xl hover:bg-white hover:ring-2 hover:ring-blue-100 transition-all">
+                  <div className="flex items-center gap-4">
+                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-xl ${ex.type === 'income' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-500'}`}>
+                      {ex.type === 'income' ? '↓' : '↑'}
+                    </div>
+                    <div>
+                      <div className="font-black text-slate-700 leading-tight">{ex.item}</div>
+                      <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{ex.createdAt}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="text-right">
+                      <div className={`text-lg font-black ${ex.type === 'income' ? 'text-emerald-600' : 'text-rose-500'}`}>
+                        {ex.type === 'income' ? '+' : '-'} {ex.currency === 'USD' ? `$${ex.price.toFixed(2)}` : `${ex.price.toLocaleString()} ៛`}
+                      </div>
+                    </div>
+                    <button onClick={() => setExpenses(expenses.filter(i => i.id !== ex.id))} className="opacity-0 group-hover:opacity-100 w-8 h-8 rounded-full flex items-center justify-center text-slate-300 hover:bg-rose-50 hover:text-rose-500 transition-all">
+                      ✕
+                    </button>
                   </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-green-600 font-bold">Total Income:</span>
-                  <span className="text-green-600 font-black">${totalIncomeEquivalentUSD.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-red-600 font-bold">Total Expenses:</span>
-                  <span className="text-red-600 font-black">${totalExpenseEquivalentUSD.toFixed(2)}</span>
-                </div>
-                <hr className="border-purple-200" />
-                <div className="flex justify-between">
-                  <span className="text-gray-700 font-bold">ប្រាក់នៅសល់:</span>
-                  <span className={`font-black ${netEquivalentUSD >= 0 ? 'text-green-600' : 'text-red-600'}`}>${netEquivalentUSD.toFixed(2)}</span>
-                </div>
-              </div>
-            </div>
+              ))
+            )}
           </div>
-      )}
-
-      <div className="max-w-5xl mx-auto bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden">
-        {/* Header */}
-        <div className="bg-blue-600 p-8 text-white text-center">
-          <h2 className="text-3xl font-black">ប្រព័ន្ធគ្រប់គ្រងការចំណាយ</h2>
-          <p className="text-blue-100 mt-1 text-sm">ទិន្នន័យរក្សាទុកបាន ២ ខែក្នុងឧបករណ៍របស់អ្នក</p>
-        </div>
-
-        <div className="p-4 md:p-8">
-          {/* Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-            <div className="bg-green-50 border border-green-100 p-6 rounded-3xl">
-              <p className="text-green-700 font-bold text-lg mb-4">Summary (USD)</p>
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-green-600 font-bold">ប្រាក់ចំណូល:</span>
-                  <span className="text-green-600 font-black">${totalIncomeUSD.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-red-600 font-bold">ការចំណាយ:</span>
-                  <span className="text-red-600 font-black">${totalExpenseUSD.toFixed(2)}</span>
-                </div>
-                <hr className="border-green-200" />
-                <div className="flex justify-between">
-                  <span className="text-gray-700 font-bold">ប្រាក់នៅសល់:</span>
-                  <span className={`font-black ${netUSD >= 0 ? 'text-green-600' : 'text-red-600'}`}>${netUSD.toFixed(2)}</span>
-                </div>
-              </div>
-            </div>
-            <div className="bg-blue-50 border border-blue-100 p-6 rounded-3xl">
-              <p className="text-blue-700 font-bold text-lg mb-4">Summary (KHR)</p>
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-green-600 font-bold">ប្រាក់ចំណូល:</span>
-                  <span className="text-green-600 font-black">{totalIncomeKHR.toLocaleString()} ៛</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-red-600 font-bold">ការចំណាយ:</span>
-                  <span className="text-red-600 font-black">{totalExpenseKHR.toLocaleString()} ៛</span>
-                </div>
-                <hr className="border-blue-200" />
-                <div className="flex justify-between">
-                  <span className="text-gray-700 font-bold">ប្រាក់នៅសល់:</span>
-                  <span className={`font-black ${netKHR >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{netKHR.toLocaleString()} ៛</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Income Input Form */}
-          <form onSubmit={(e) => handleSubmit(e, 'income')} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 bg-green-50 p-6 rounded-3xl border border-green-200">
-            <div className="md:col-span-1">
-              <label className="block text-xs font-black mb-1.5 uppercase text-green-600 ml-1">ប្រភពប្រាក់ចំណូល</label>
-              <input type="text" className="w-full border-0 bg-white p-3 rounded-xl shadow-sm outline-none focus:ring-2 focus:ring-green-500" value={formData.item} onChange={(e) => setFormData({...formData, item: e.target.value})} placeholder="ឈ្មោះប្រភព" required />
-            </div>
-            <div>
-              <label className="block text-xs font-black mb-1.5 uppercase text-green-600 ml-1">ចំនួន</label>
-              <input type="number" step="any" className="w-full border-0 bg-white p-3 rounded-xl shadow-sm outline-none focus:ring-2 focus:ring-green-500" value={formData.price} onChange={(e) => setFormData({...formData, price: e.target.value})} placeholder="0.00" required />
-            </div>
-            <div>
-              <label className="block text-xs font-black mb-1.5 uppercase text-green-600 ml-1">រូបិយប័ណ្ណ</label>
-              <select className="w-full border-0 bg-white p-3 rounded-xl shadow-sm cursor-pointer" value={formData.currency} onChange={(e) => setFormData({...formData, currency: e.target.value})}>
-                <option value="USD">USD ($)</option>
-                <option value="KHR">KHR (៛)</option>
-              </select>
-            </div>
-            <div className="flex items-end">
-              <button className={`w-full py-3 rounded-xl text-white font-black shadow-lg transition-all active:scale-95 bg-green-600 hover:bg-green-700`}>
-                ➕ បញ្ចូលប្រាក់ចំណូល
-              </button>
-            </div>
-          </form>
-
-          {/* Expense Input Form */}
-          <form onSubmit={(e) => handleSubmit(e, 'expense')} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-10 bg-red-50 p-6 rounded-3xl border border-red-200">
-            <div className="md:col-span-1">
-              <label className="block text-xs font-black mb-1.5 uppercase text-red-600 ml-1">មុខទំនិញ</label>
-              <input type="text" className="w-full border-0 bg-white p-3 rounded-xl shadow-sm outline-none focus:ring-2 focus:ring-red-500" value={formData.item} onChange={(e) => setFormData({...formData, item: e.target.value})} placeholder="ឈ្មោះទំនិញ" required />
-            </div>
-            <div>
-              <label className="block text-xs font-black mb-1.5 uppercase text-red-600 ml-1">តម្លៃ</label>
-              <input type="number" step="any" min={formData.currency === 'KHR' ? 100 : undefined} className="w-full border-0 bg-white p-3 rounded-xl shadow-sm outline-none focus:ring-2 focus:ring-red-500" value={formData.price} onChange={(e) => setFormData({...formData, price: e.target.value})} placeholder="0.00" required />
-            </div>
-            <div>
-              <label className="block text-xs font-black mb-1.5 uppercase text-red-600 ml-1">រូបិយប័ណ្ណ</label>
-              <select className="w-full border-0 bg-white p-3 rounded-xl shadow-sm cursor-pointer" value={formData.currency} onChange={(e) => setFormData({...formData, currency: e.target.value})}>
-                <option value="USD">USD ($)</option>
-                <option value="KHR">KHR (៛)</option>
-              </select>
-            </div>
-            <div className="flex items-end">
-              <button className={`w-full py-3 rounded-xl text-white font-black shadow-lg transition-all active:scale-95 ${editingId ? 'bg-orange-500' : 'bg-red-600 hover:bg-red-700'}`}>
-                {editingId ? '💾 រក្សាទុក' : '➕ បញ្ចូលការចំណាយ'}
-              </button>
-            </div>
-          </form>
-
-          {/* Search Controls */}
-          <div className="flex flex-col md:flex-row gap-4 mb-6">
-            <input type="text" placeholder="🔍 ស្វែងរកតាមឈ្មោះ..." className="flex-[2] border bg-white p-3 rounded-xl outline-none focus:ring-2 focus:ring-yellow-400" onChange={(e) => setSearchTerm(e.target.value)} />
-            <input type="date" className="flex-1 border bg-white p-3 rounded-xl outline-none focus:ring-2 focus:ring-yellow-400" onChange={(e) => {
-              if (e.target.value) {
-                const [y, m, d] = e.target.value.split('-');
-                setSearchDate(`${d}/${m}/${y}`);
-              } else { setSearchDate(''); }
-            }} />
-          </div>
-
-          {/* Income Section */}
-          <h3 className="text-xl font-bold mb-4 text-green-600">💰 ប្រាក់ចំណូល</h3>
-          <div className="hidden md:block overflow-hidden border border-green-100 rounded-2xl mb-8">
-            <table className="w-full text-left">
-              <thead className="bg-green-100 text-green-600 uppercase text-[11px] tracking-wider">
-                <tr>
-                  <th className="p-4 font-black">កាលបរិច្ឆេទ</th>
-                  <th className="p-4 font-black">ប្រភព</th>
-                  <th className="p-4 font-black text-right">ចំនួន</th>
-                  <th className="p-4 font-black text-center">សកម្មភាព</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-green-100">
-                {filteredExpenses.filter(ex => ex.type === 'income').map((ex) => (
-                  <tr key={ex.id} className="hover:bg-green-50/50 transition">
-                    <td className="p-4 text-xs font-bold text-gray-400 italic">
-                      {ex.createdAtFull || ex.createdAt}
-                      {ex.isEdited && <div className="text-orange-500 mt-1">✍️ កែរ: {ex.updatedAt}</div>}
-                    </td>
-                    <td className="p-4 font-bold text-gray-700">{ex.item}</td>
-                    <td className={`p-4 text-right font-black ${ex.currency === 'USD' ? 'text-green-600' : 'text-green-600'}`}>
-                      {ex.currency === 'USD' ? `$${Number(ex.price).toFixed(2)}` : `${Number(ex.price).toLocaleString()} ៛`}
-                    </td>
-                    <td className="p-4 text-center">
-                      <div className="flex justify-center gap-2">
-                        <button onClick={() => handleEdit(ex)} className="p-2 text-yellow-600 hover:bg-yellow-50 rounded-lg">📝</button>
-                        <button onClick={() => confirmDelete(ex.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-lg">🗑️</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="md:hidden space-y-4 mb-8">
-            {filteredExpenses.filter(ex => ex.type === 'income').map((ex) => (
-              <div key={ex.id} className="bg-green-50 border border-green-200 p-5 rounded-3xl shadow-sm">
-                <div className="flex justify-between items-center mb-3">
-                  <span className="text-[10px] font-black text-gray-300 uppercase italic">{ex.createdAtFull || ex.createdAt}</span>
-                  <span className={`text-xl font-black text-green-600`}>
-                    {ex.currency === 'USD' ? `$${Number(ex.price).toFixed(2)}` : `${Number(ex.price).toLocaleString()} ៛`}
-                  </span>
-                </div>
-                <h4 className="font-bold text-gray-800 text-lg mb-1">{ex.item}</h4>
-                {ex.isEdited && <p className="text-[10px] text-orange-500 font-bold mb-4">✍️ កែរចុងក្រោយ: {ex.updatedAt}</p>}
-                <div className="flex gap-2">
-                  <button onClick={() => handleEdit(ex)} className="flex-1 py-2 bg-yellow-50 text-yellow-700 rounded-xl font-bold text-xs">កែប្រែ</button>
-                  <button onClick={() => confirmDelete(ex.id)} className="flex-1 py-2 bg-red-50 text-red-700 rounded-xl font-bold text-xs">លុប</button>
-                </div>
-              </div>
-            ))}
-          </div>
-          {filteredExpenses.filter(ex => ex.type === 'income').length === 0 && (
-            <div className="text-center py-10 text-green-300 italic mb-8">មិនមានប្រាក់ចំណូលបង្ហាញ...</div>
-          )}
-
-          {/* Expense Section */}
-          <h3 className="text-xl font-bold mb-4 text-red-600">💸 ការចំណាយ</h3>
-          <div className="hidden md:block overflow-hidden border border-red-100 rounded-2xl">
-            <table className="w-full text-left">
-              <thead className="bg-red-100 text-red-600 uppercase text-[11px] tracking-wider">
-                <tr>
-                  <th className="p-4 font-black">កាលបរិច្ឆេទ</th>
-                  <th className="p-4 font-black">មុខទំនិញ</th>
-                  <th className="p-4 font-black text-right">តម្លៃ</th>
-                  <th className="p-4 font-black text-center">សកម្មភាព</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-red-100">
-                {filteredExpenses.filter(ex => ex.type === 'expense').map((ex) => (
-                  <tr key={ex.id} className="hover:bg-red-50/50 transition">
-                    <td className="p-4 text-xs font-bold text-gray-400 italic">
-                      {ex.createdAtFull || ex.createdAt}
-                      {ex.isEdited && <div className="text-orange-500 mt-1">✍️ កែរ: {ex.updatedAt}</div>}
-                    </td>
-                    <td className="p-4 font-bold text-gray-700">{ex.item}</td>
-                    <td className={`p-4 text-right font-black ${ex.currency === 'USD' ? 'text-red-600' : 'text-red-600'}`}>
-                      {ex.currency === 'USD' ? `$${Number(ex.price).toFixed(2)}` : `${Number(ex.price).toLocaleString()} ៛`}
-                    </td>
-                    <td className="p-4 text-center">
-                      <div className="flex justify-center gap-2">
-                        <button onClick={() => handleEdit(ex)} className="p-2 text-yellow-600 hover:bg-yellow-50 rounded-lg">📝</button>
-                        <button onClick={() => confirmDelete(ex.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-lg">🗑️</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="md:hidden space-y-4">
-            {filteredExpenses.filter(ex => ex.type === 'expense').map((ex) => (
-              <div key={ex.id} className="bg-red-50 border border-red-200 p-5 rounded-3xl shadow-sm">
-                <div className="flex justify-between items-center mb-3">
-                  <span className="text-[10px] font-black text-gray-300 uppercase italic">{ex.createdAtFull || ex.createdAt}</span>
-                  <span className={`text-xl font-black text-red-600`}>
-                    {ex.currency === 'USD' ? `$${Number(ex.price).toFixed(2)}` : `${Number(ex.price).toLocaleString()} ៛`}
-                  </span>
-                </div>
-                <h4 className="font-bold text-gray-800 text-lg mb-1">{ex.item}</h4>
-                {ex.isEdited && <p className="text-[10px] text-orange-500 font-bold mb-4">✍️ កែរចុងក្រោយ: {ex.updatedAt}</p>}
-                <div className="flex gap-2">
-                  <button onClick={() => handleEdit(ex)} className="flex-1 py-2 bg-yellow-50 text-yellow-700 rounded-xl font-bold text-xs">កែប្រែ</button>
-                  <button onClick={() => confirmDelete(ex.id)} className="flex-1 py-2 bg-red-50 text-red-700 rounded-xl font-bold text-xs">លុប</button>
-                </div>
-              </div>
-            ))}
-          </div>
-          {filteredExpenses.filter(ex => ex.type === 'expense').length === 0 && (
-            <div className="text-center py-20 text-red-300 italic">មិនមានការចំណាយបង្ហាញ...</div>
-          )}
         </div>
       </div>
       <Footer />
